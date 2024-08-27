@@ -184,7 +184,7 @@ function extract_data(container) {
             " - " +
             container.email.json.subject +
             "/" +
-            "email";
+            "email.eml";
 
         //
         //	8.	Save the path for the next promise.
