@@ -1,20 +1,20 @@
-let AWS = require('aws-sdk');
-let moment = require('moment');
-let uuidv1 = require('uuid/v1');
-let MailComposer = require('nodemailer/lib/mail-composer');
+let AWS = require("aws-sdk");
+let moment = require("moment");
+let uuidv1 = require("uuid/v1");
+let MailComposer = require("nodemailer/lib/mail-composer");
 
 //
 //	Initialize S3.
 //
 let s3 = new AWS.S3({
-	apiVersion: '2006-03-01'
+    apiVersion: "2006-03-01",
 });
 
 //
 //	Initialize SES.
 //
 let ses = new AWS.SES({
-	apiVersion: '2010-12-01'
+    apiVersion: "2010-12-01",
 });
 
 //
@@ -22,64 +22,52 @@ let ses = new AWS.SES({
 //	in to a raw email, send them using SES, and store them in S3.
 //
 exports.handler = (event) => {
+    //
+    //	1.	This JS object will contain all the data within the chain.
+    //
+    let container = {
+        bucket: event.Records[0].s3.bucket.name,
+        key: event.Records[0].s3.object.key,
+        email: {
+            json: {},
+            raw: "",
+        },
+        uuid: uuidv1(),
+    };
 
-	//
-	//	1.	This JS object will contain all the data within the chain.
-	//
-	let container = {
-		bucket: event.Records[0].s3.bucket.name,
-		key: event.Records[0].s3.object.key,
-		email: {
-			json: {},
-			raw: ""
-		},
-		uuid: uuidv1()
-	}
+    //
+    //	->	Start the chain.
+    //
+    load_the_email(container)
+        .then(function (container) {
+            return extract_data(container);
+        })
+        .then(function (container) {
+            return generate_the_raw_email(container);
+        })
+        .then(function (container) {
+            return send_email(container);
+        })
+        .then(function (container) {
+            return save_raw_email(container);
+        })
+        .then(function (container) {
+            return copy_raw_email(container);
+        })
+        .then(function (container) {
+            return delete_json_email(container);
+        })
+        .then(function (container) {
+            return delete_raw_email(container);
+        })
+        .then(function (container) {
+            return true;
+        })
+        .catch(function (error) {
+            console.error(error);
 
-	//
-	//	->	Start the chain.
-	//
-	load_the_email(container)
-		.then(function(container) {
-
-			return extract_data(container);
-
-		}).then(function(container) {
-
-			return generate_the_raw_email(container);
-
-		}).then(function(container) {
-
-			return send_email(container);
-
-		}).then(function(container) {
-
-			return save_raw_email(container);
-
-		}).then(function(container) {
-
-			return copy_raw_email(container);
-
-		}).then(function(container) {
-
-			return delete_json_email(container);
-
-		}).then(function(container) {
-
-			return delete_raw_email(container);
-
-		}).then(function(container) {
-
-			return true;
-
-		}).catch(function(error) {
-
-			console.error(error);
-
-			return false;
-
-		});
-
+            return false;
+        });
 };
 
 //	 _____    _____     ____    __  __   _____    _____   ______    _____
@@ -93,131 +81,121 @@ exports.handler = (event) => {
 //
 //	Load the JSON email that triggered this Lambda.
 //
-function load_the_email(container)
-{
-	return new Promise(function(resolve, reject) {
+function load_the_email(container) {
+    return new Promise(function (resolve, reject) {
+        console.info("load_the_email");
 
-		console.info("load_the_email");
+        //
+        //	1.	Set the query.
+        //
+        let params = {
+            Bucket: container.bucket,
+            Key: container.key,
+        };
 
-		//
-		//	1.	Set the query.
-		//
-		let params = {
-			Bucket: container.bucket,
-			Key: container.key
-		};
+        //
+        //	->	Execute the query.
+        //
+        s3.getObject(params, function (error, data) {
+            //
+            //	1.	Check for internal errors.
+            //
+            if (error) {
+                return reject(error);
+            }
 
-		//
-		//	->	Execute the query.
-		//
-		s3.getObject(params, function(error, data) {
+            //
+            //	2.	Save the email for the next promise.
+            //
+            container.email.json = JSON.parse(data.Body);
 
-			//
-			//	1.	Check for internal errors.
-			//
-			if(error)
-			{
-				return reject(error);
-			}
-
-			//
-			//	2.	Save the email for the next promise.
-			//
-			container.email.json = JSON.parse(data.Body);
-
-			//
-			//	->	Move to the next chain.
-			//
-			return resolve(container);
-
-		});
-
-	});
+            //
+            //	->	Move to the next chain.
+            //
+            return resolve(container);
+        });
+    });
 }
 
 //
 //	Extract all the data necessary to organize the incoming emails.
 //
-function extract_data(container)
-{
-	return new Promise(function(resolve, reject) {
+function extract_data(container) {
+    return new Promise(function (resolve, reject) {
+        console.info("extract_data");
 
-		console.info("extract_data");
+        //
+        //	1.	Extract all the information
+        //
+        let tmp_to = container.email.json.to
+            .match(/[a-z0-9-+]{1,30}@[a-z0-9-]{1,65}.[a-z]{1,}/gm)[0]
+            .split("@");
 
-		//
-		//	1.	Extract all the information
-		//
-		let tmp_to = 	container.email.json
-						.to
-						.match(/[a-z0-9-+]{1,30}@[a-z0-9-]{1,65}.[a-z]{1,}/gm)[0]
-						.split('@');
+        let tmp_from = container.email.json.from
+            .match(/[a-z0-9-+]{1,30}@[a-z0-9-]{1,65}.[a-z]{1,}/gm)[0]
+            .split("@");
 
-		let tmp_from = 	container.email.json
-						.from
-						.match(/[a-z0-9-+]{1,30}@[a-z0-9-]{1,65}.[a-z]{1,}/gm)[0]
-						.split('@');
+        //
+        //	2.	Get the domain name of the receiving end, so we can group
+        //		emails by all the domain that were added to SES.
+        //
+        let to_domain = tmp_to[1];
 
-		//
-		//	2.	Get the domain name of the receiving end, so we can group
-		//		emails by all the domain that were added to SES.
-		//
-		let to_domain = tmp_to[1];
+        //
+        //	3.	Based on the email name, we replace all the + characters, that
+        //		can be used to organize ones on-line accounts in to /, this way
+        //		we can build a S3 patch which will automatically organize
+        //		all the email in structured folder.
+        //
+        let to_account = tmp_to[0].replace(/\+/g, "/");
 
-		//
-		//	3.	Based on the email name, we replace all the + characters, that
-		//		can be used to organize ones on-line accounts in to /, this way
-		//		we can build a S3 patch which will automatically organize
-		//		all the email in structured folder.
-		//
-		let to_account = tmp_to[0].replace(/\+/g, "/");
+        //
+        //	4.	Get the domain name of the email which in our case will
+        //		become the company name.
+        //
+        let from_domain = tmp_from[1];
 
-		//
-		//	4.	Get the domain name of the email which in our case will
-		//		become the company name.
-		//
-		let from_domain = tmp_from[1];
+        //
+        //	5.	Get the name of who sent us the email.
+        //
+        let from_account = tmp_from[0];
 
-		//
-		//	5.	Get the name of who sent us the email.
-		//
-		let from_account = tmp_from[0];
+        //
+        //	6.	Create a human readable time stamp that matches the format
+        //		S3 Provides in its Event.
+        //
+        let date = moment().format("ddd, DD MMM YYYY HH:MM:SS ZZ");
 
-		//
-		//	6.	Create a human readable time stamp that matches the format
-		//		S3 Provides in its Event.
-		//
-		date = moment().format("ddd, DD MMM YYYY HH:MM:SS ZZ");
+        //
+        //	7.	Create the path where the email needs to be moved
+        //		so it is properly organized.
+        //
+        let path =
+            "Sent/" +
+            to_domain +
+            "/" +
+            to_account +
+            "/" +
+            from_domain +
+            "/" +
+            from_account +
+            "/" +
+            date +
+            " - " +
+            container.email.json.subject +
+            "/" +
+            "email";
 
-		//
-		//	7.	Create the path where the email needs to be moved
-		//		so it is properly organized.
-		//
-		let path = 	"Sent/"
-					+ to_domain
-					+ "/"
-					+ to_account
-					+ "/"
-					+ from_domain
-					+ "/"
-					+ from_account
-					+ "/"
-					+ date
-					+ " - "
-					+ container.email.json.subject
-					+ "/"
-					+ "email";
+        //
+        //	8.	Save the path for the next promise.
+        //
+        container.path = path;
 
-		//
-		//	8.	Save the path for the next promise.
-		//
-		container.path = path;
-
-		//
-		//	->	Move to the next chain.
-		//
-		return resolve(container);
-
-	});
+        //
+        //	->	Move to the next chain.
+        //
+        return resolve(container);
+    });
 }
 
 //
@@ -225,73 +203,64 @@ function extract_data(container)
 //	that can be used by SES, and later on stored and converted in multiple
 //	formats.
 //
-function generate_the_raw_email(container, callback)
-{
-	return new Promise(function(resolve, reject) {
+function generate_the_raw_email(container, callback) {
+    return new Promise(function (resolve, reject) {
+        console.info("generate_the_raw_email");
 
-		console.info("generate_the_raw_email");
+        //
+        //	1.	Crete the email based on the message object which holds all the
+        //		necessary information.
+        //
+        let mail = new MailComposer(container.email.json);
 
-		//
-		//	1.	Crete the email based on the message object which holds all the
-		//		necessary information.
-		//
-		let mail = new MailComposer(container.email.json);
+        //
+        //	2.	Take the email and compile it down to its text form for storage.
+        //
+        mail.compile().build(function (error, raw_message) {
+            //
+            //	1.	Check if there was an error
+            //
+            if (error) {
+                return reject(error);
+            }
 
-		//
-		//	2.	Take the email and compile it down to its text form for storage.
-		//
-		mail.compile().build(function(error, raw_message) {
+            //
+            //	2.	Save the raw email so we can save it as is in to S3.
+            //
+            container.email.raw = raw_message;
 
-			//
-			//	1.	Check if there was an error
-			//
-			if(error)
-			{
-				return reject(error);
-			}
-
-			//
-			//	2.	Save the raw email so we can save it as is in to S3.
-			//
-			container.email.raw = raw_message;
-
-			//
-			//	->	Move to the next promise
-			//
+            //
+            //	->	Move to the next promise
+            //
             return resolve(container);
-
-		});
-	});
+        });
+    });
 }
 
 //
 //	Use the newly generated RAW email and send it using SES.
 //
-function send_email(container)
-{
-    return new Promise(function(resolve, reject) {
-
-    	console.info("send_email");
+function send_email(container) {
+    return new Promise(function (resolve, reject) {
+        console.info("send_email");
 
         //
         //	1.	Create the message
         //
         let params = {
-            RawMessage:{
-                Data: container.email.raw
-            }
+            RawMessage: {
+                Data: container.email.raw,
+            },
         };
 
         //
         //	-> Send the email out
         //
-        ses.sendRawEmail(params,function(error, data) {
-
+        ses.sendRawEmail(params, function (error, data) {
             //
             //	1.	Check if there was an error
             //
-            if(error)
-            {
+            if (error) {
                 return reject(error);
             }
 
@@ -299,9 +268,7 @@ function send_email(container)
             //	->	Move to the next chain
             //
             return resolve(container);
-
         });
-
     });
 }
 
@@ -318,162 +285,142 @@ function send_email(container)
 //	the Convert action, and once the convert action makes a PUT nothing else
 //	happens.
 //
-function save_raw_email(container)
-{
-	return new Promise(function(resolve, reject) {
+function save_raw_email(container) {
+    return new Promise(function (resolve, reject) {
+        console.info("save_raw_email");
 
-		console.info("save_raw_email");
+        //
+        //	1.	Set the query.
+        //
+        let params = {
+            Bucket: container.bucket,
+            Key: "TMP/email_out/raw/" + container.uuid + ".eml",
+            Body: container.email.raw,
+        };
 
-		//
-		//	1.	Set the query.
-		//
-		let params = {
-			Bucket: container.bucket,
-			Key: 'TMP/email_out/raw/' + container.uuid,
-			Body: container.email.raw
-		};
+        //
+        //	->	Execute the query.
+        //
+        s3.putObject(params, function (error, data) {
+            //
+            //	1.	Check for internal errors.
+            //
+            if (error) {
+                return reject(error);
+            }
 
-		//
-		//	->	Execute the query.
-		//
-		s3.putObject(params, function(error, data) {
-
-			//
-			//	1.	Check for internal errors.
-			//
-			if(error)
-			{
-				return reject(error);
-			}
-
-			//
-			//	->	Move to the next chain.
-			//
-			return resolve(container);
-
-		});
-
-	});
+            //
+            //	->	Move to the next chain.
+            //
+            return resolve(container);
+        });
+    });
 }
 
 //
 //	Now that we have our RAW email saved we do a copy event so it will trigger
 //	the Conversion Lambda.
 //
-function copy_raw_email(container)
-{
-	return new Promise(function(resolve, reject) {
+function copy_raw_email(container) {
+    return new Promise(function (resolve, reject) {
+        console.info("copy_raw_email");
 
-		console.info("copy_raw_email");
+        //
+        //	1.	Set the query.
+        //
+        let params = {
+            Bucket: container.bucket,
+            CopySource:
+                container.bucket +
+                "/TMP/email_out/raw/" +
+                container.uuid +
+                ".eml",
+            Key: container.path,
+        };
 
-		//
-		//	1.	Set the query.
-		//
-		let params = {
-			Bucket: container.bucket,
-			CopySource: container.bucket + "/TMP/email_out/raw/" + container.uuid,
-			Key: container.path
-		};
+        //
+        //	->	Execute the query.
+        //
+        s3.copyObject(params, function (error, data) {
+            //
+            //	1.	Check for internal errors.
+            //
+            if (error) {
+                return reject(error);
+            }
 
-		//
-		//	->	Execute the query.
-		//
-		s3.copyObject(params, function(error, data) {
-
-			//
-			//	1.	Check for internal errors.
-			//
-			if(error)
-			{
-				return reject(error);
-			}
-
-			//
-			//	->	Move to the next chain.
-			//
-			return resolve(container);
-
-		});
-
-	});
+            //
+            //	->	Move to the next chain.
+            //
+            return resolve(container);
+        });
+    });
 }
 
 //
 //	And before we finish we clean up the environment by deleting the JSON email,
 //
-function delete_json_email(container)
-{
-	return new Promise(function(resolve, reject) {
+function delete_json_email(container) {
+    return new Promise(function (resolve, reject) {
+        console.info("delete_json_email");
 
-		console.info("delete_json_email");
+        //
+        //	1.	Set the query.
+        //
+        let params = {
+            Bucket: container.bucket,
+            Key: container.key,
+        };
 
-		//
-		//	1.	Set the query.
-		//
-		let params = {
-			Bucket: container.bucket,
-			Key: container.key
-		};
+        //
+        //	->	Execute the query.
+        //
+        s3.deleteObject(params, function (error, data) {
+            //
+            //	1.	Check for internal errors.
+            //
+            if (error) {
+                return reject(error);
+            }
 
-		//
-		//	->	Execute the query.
-		//
-		s3.deleteObject(params, function(error, data) {
-
-			//
-			//	1.	Check for internal errors.
-			//
-			if(error)
-			{
-				return reject(error);
-			}
-
-			//
-			//	->	Move to the next chain.
-			//
-			return resolve(container);
-
-		});
-
-	});
+            //
+            //	->	Move to the next chain.
+            //
+            return resolve(container);
+        });
+    });
 }
 
 //
 //	And the temporary RAW email.
 //
-function delete_raw_email(container)
-{
-	return new Promise(function(resolve, reject) {
+function delete_raw_email(container) {
+    return new Promise(function (resolve, reject) {
+        console.info("delete_raw_email");
 
-		console.info("delete_raw_email");
+        //
+        //	1.	Set the query.
+        //
+        let params = {
+            Bucket: container.bucket,
+            Key: "TMP/email_out/raw/" + container.uuid + ".eml",
+        };
 
-		//
-		//	1.	Set the query.
-		//
-		let params = {
-			Bucket: container.bucket,
-			Key: "TMP/email_out/raw/" + container.uuid
-		};
+        //
+        //	->	Execute the query.
+        //
+        s3.deleteObject(params, function (error, data) {
+            //
+            //	1.	Check for internal errors.
+            //
+            if (error) {
+                return reject(error);
+            }
 
-		//
-		//	->	Execute the query.
-		//
-		s3.deleteObject(params, function(error, data) {
-
-			//
-			//	1.	Check for internal errors.
-			//
-			if(error)
-			{
-				return reject(error);
-			}
-
-			//
-			//	->	Move to the next chain.
-			//
-			return resolve(container);
-
-		});
-
-	});
+            //
+            //	->	Move to the next chain.
+            //
+            return resolve(container);
+        });
+    });
 }
